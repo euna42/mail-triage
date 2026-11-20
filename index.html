@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <!-- Microsoft sign-in library (MSAL). Each person signs in with their own work mailbox. -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
 <style>
   /* Layout: deep-blue command band, category pills + compact drop pill, then three urgency lanes of mail cards. */
   :root {
@@ -145,6 +145,7 @@
   <p>회사 메일 계정으로 한 번만 로그인하면, 내 받은편지함을 긴급 · 보통 · 여유로 자동 분류해 보여드려요. 메일은 이 브라우저 안에서만 읽고 어디에도 저장하지 않아요.</p>
   <button class="ms-btn" type="button" id="login"><span class="ms-logo" aria-hidden="true"><i style="background:#f25022"></i><i style="background:#7fba00"></i><i style="background:#00a4ef"></i><i style="background:#ffb900"></i></span>Microsoft 계정으로 로그인</button>
   <p class="msg bad" id="login-err" hidden></p>
+  <p style="font-size:13px"><a href="guide.html" style="color:var(--accent)">처음이세요? 사용 안내 보기</a></p>
 </div>
 
 <div class="wrap" id="app" hidden>
@@ -453,6 +454,11 @@ window.tqFiles = tqFiles;
 
   /* ----- Sign-in ----- */
   if (!CLIENT_ID) { $('gate-setup').hidden = false; return; }
+  if (typeof msal === 'undefined') {
+    $('gate-login').hidden = false;
+    $('login-err').textContent = '로그인 기능을 불러오지 못했어요. 인터넷 연결이나 회사 보안 설정(외부 스크립트 차단)을 확인해 주세요.'; $('login-err').hidden = false;
+    return;
+  }
   const app = new msal.PublicClientApplication({
     auth: { clientId: CLIENT_ID, authority: AUTHORITY, redirectUri: location.origin + location.pathname },
     cache: { cacheLocation: 'localStorage' },
@@ -705,7 +711,15 @@ window.tqFiles = tqFiles;
     }
     if (!account) {
       $('gate-login').hidden = false;
-      $('login').onclick = () => app.loginRedirect({ scopes: SCOPES, prompt: 'select_account' });
+      $('login').onclick = async () => {
+        $('login-err').hidden = true;
+        try { await app.loginRedirect({ scopes: SCOPES, prompt: 'select_account' }); }
+        catch (e) {
+          // A login abandoned midway leaves a lock behind; clear it so the next click works.
+          if (e && e.errorCode === 'interaction_in_progress') { Object.keys(sessionStorage).filter(k => k.includes('interaction.status')).forEach(k => sessionStorage.removeItem(k)); }
+          $('login-err').textContent = '로그인하지 못했어요: ' + (e.errorMessage || e.message || e) + ' — 한 번 더 눌러 주세요.'; $('login-err').hidden = false;
+        }
+      };
       return;
     }
     $('app').hidden = false;
