@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <!-- Microsoft sign-in library (MSAL). Each person signs in with their own work mailbox. -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
+<script>if (!window.msal) document.write('<script src="https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"><\/script>');</script>
 <style>
   /* Layout: deep-blue command band, category pills + compact drop pill, then three urgency lanes of mail cards. */
   :root {
@@ -118,6 +119,7 @@
   details.act p { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--bg); }
   details.act p.why { padding: 0; background: none; color: var(--muted); }
 
+  [hidden] { display: none !important; }
   .gate { max-width: 520px; margin: 10vh auto 0; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; display: grid; gap: 14px; text-align: center; }
   .gate h1 { font-size: 24px; }
   .gate p { margin: 0; color: var(--muted); }
@@ -453,6 +455,8 @@ window.tqFiles = tqFiles;
   const T = window.tqTriage;
 
   /* ----- Sign-in ----- */
+  // Answer the button straight away, so a click is never silent while sign-in is still loading.
+  $('login').onclick = () => { $('login-err').textContent = '로그인 준비 중이에요. 잠시 뒤 다시 눌러 주세요. 계속 이러면 Ctrl + F5로 새로고침해 주세요.'; $('login-err').hidden = false; };
   if (!CLIENT_ID) { $('gate-setup').hidden = false; return; }
   if (typeof msal === 'undefined') {
     $('gate-login').hidden = false;
