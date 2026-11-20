@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>메일 긴급도 확인</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<!-- Microsoft sign-in library (MSAL). Each person signs in with their own work mailbox. -->
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<style>
+  /* Layout: deep-blue command band, category pills + compact drop pill, then three urgency lanes of mail cards. */
+  :root {
+    --bg: #f4f6f9; --panel: #ffffff; --line: #dfe4ea; --fg: #14212b; --muted: #5f6f7c;
+    --accent: #1d4e89; --band: #173f6f; --band-ink: #ffffff;
+    --hi: #c62828; --mid: #d08a1e; --lo: #3a9a63; --gray: #8a96a0;
+    --sans: "IBM Plex Sans KR", "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+    --r: 10px; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #0e141a; --panel: #172029; --line: #2a3742; --fg: #e6edf2; --muted: #93a4b1; --accent: #6fa3e0; --band: #14304f; --hi: #ff6b6b; --mid: #f0b456; --lo: #6fcf97; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --bg: #0e141a; --panel: #172029; --line: #2a3742; --fg: #e6edf2; --muted: #93a4b1; --accent: #6fa3e0; --band: #14304f; --hi: #ff6b6b; --mid: #f0b456; --lo: #6fcf97; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.55 var(--sans); letter-spacing: -0.005em; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding-block: 20px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 18px; }
+  button { font: inherit; }
+
+  .band { position: relative; overflow: hidden; border-radius: 16px; background: var(--band); color: var(--band-ink); padding: clamp(18px, 3vw, 28px); display: grid; gap: 12px; }
+  .band::after { content: ""; position: absolute; inset: auto -8% -55% auto; width: 60%; aspect-ratio: 1; max-width: 100%; border-radius: 50%; border: 1px solid rgba(255,255,255,.12); box-shadow: 0 0 0 28px rgba(255,255,255,.03), 0 0 0 64px rgba(255,255,255,.025); pointer-events: none; }
+  .band-top { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; position: relative; z-index: 1; }
+  .eyebrow { margin: 0; font: 500 11.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; opacity: .75; }
+  h1 { margin: 4px 0 0; font-weight: 700; font-size: clamp(24px, 3.4vw, 32px); line-height: 1.15; letter-spacing: -0.02em; }
+  .lede { margin: 0; max-width: 66ch; font-size: 15px; opacity: .93; position: relative; z-index: 1; }
+  .lede b { font-family: var(--mono); font-weight: 600; padding: 0 2px; }
+  .lede b.hi { color: #ffb4b4; }
+  .lede b.unread { color: #a9d4ff; }
+  .lede b.unread::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #a9d4ff; margin-right: 5px; vertical-align: middle; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .live { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 10px; border-radius: 999px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18); font-size: 12.5px; white-space: nowrap; }
+  .live b { font-family: var(--mono); font-weight: 500; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #5ee08f; }
+  @media (prefers-reduced-motion: no-preference) { .dot { animation: pulse 2s ease-out infinite; } }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(94,224,143,.55); } 80%, 100% { box-shadow: 0 0 0 9px rgba(94,224,143,0); } }
+  .band-btn { appearance: none; border: 0; background: #fff; color: var(--band); border-radius: 999px; padding: 7px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .band-btn.ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.3); }
+  .band-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .who-am-i { font-size: 12px; opacity: .8; }
+
+  .mix { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 16px; align-items: center; }
+  .cats { display: flex; flex-wrap: wrap; gap: 6px; }
+  .catpill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); font-size: 12.5px; }
+  .catpill b { font-family: var(--mono); font-weight: 500; }
+  .catpill svg, .cat svg { width: 13px; height: 13px; color: var(--muted); }
+  .zone { grid-column: 2; display: inline-flex; align-items: center; gap: 8px; padding: 7px 16px 7px 12px; cursor: pointer; white-space: nowrap; border-radius: 999px; border: 1.5px dashed color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--panel); color: var(--muted); font-size: 12.5px; }
+  .zone:hover, .zone.over { border-color: var(--accent); }
+  .zone.over { border-style: solid; background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+  .zone svg { width: 18px; height: 18px; color: var(--accent); }
+  .zone strong { color: var(--fg); font-weight: 600; }
+  .zone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .mix .full { grid-column: 1 / -1; }
+  @media (max-width: 640px) { .mix { grid-template-columns: minmax(0, 1fr); } .zone { grid-column: 1; justify-self: start; } }
+
+  .sec-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+  h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 5px 13px; font-size: 12.5px; cursor: pointer; }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .note { margin: 0; color: var(--muted); font-size: 12.5px; max-width: 90ch; }
+  .msg { margin: 0; padding: 14px; border-radius: var(--r); text-align: center; }
+  .msg.bad { color: var(--hi); background: color-mix(in srgb, var(--hi) 8%, var(--panel)); }
+
+  .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; align-items: start; }
+  .lane { --lane: var(--accent); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; background: color-mix(in srgb, var(--fg) 3%, var(--bg)); border: 1px solid var(--line); }
+  .lane.hi { --lane: var(--hi); } .lane.mid { --lane: var(--mid); } .lane.lo { --lane: var(--lo); } .lane.noise { --lane: var(--gray); }
+  .lane-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 4px; }
+  .lane-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lane); }
+  .lane-name { font-weight: 700; }
+  .lane-sub { color: var(--muted); font-size: 12px; }
+  .lane-n { margin-left: auto; min-width: 26px; text-align: center; padding: 1px 8px; border-radius: 999px; font: 600 12px var(--mono); color: var(--lane); background: color-mix(in srgb, var(--lane) 12%, var(--panel)); }
+  .lane-btn { appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 2px 10px; font-size: 11.5px; cursor: pointer; }
+  .lane-body { display: flex; flex-direction: column; gap: 8px; }
+  .lane-empty { margin: 0; padding: 22px 10px; text-align: center; color: var(--muted); font-size: 12.5px; border: 1px dashed var(--line); border-radius: var(--r); }
+  .more { appearance: none; border: 1px dashed var(--line); background: transparent; color: var(--muted); border-radius: var(--r); padding: 8px; font-size: 12.5px; cursor: pointer; }
+  .more:hover, .lane-btn:hover { color: var(--fg); }
+
+  .card { flex: none; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; }
+  .lane.hi .card { border-left: 3px solid var(--hi); }
+  .card:hover { border-color: color-mix(in srgb, var(--fg) 25%, var(--line)); box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  .lane.hi .card:hover { border-left-color: var(--hi); }
+  .card.done, .card.leaving { opacity: .5; }
+  .card-top { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .ava { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 10.5px; font-weight: 600; }
+  .card-name { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+  .card-time { flex: none; color: var(--muted); font-size: 11.5px; }
+  .check { flex: none; margin-left: 4px; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--panel); color: transparent; font-size: 13px; font-weight: 700; line-height: 1; cursor: pointer; display: grid; place-items: center; }
+  .check:hover { border-color: var(--lo); color: var(--lo); }
+  .check[aria-pressed="true"] { background: var(--lo); border-color: var(--lo); color: #fff; }
+  .subj { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .subj a { color: inherit; text-decoration: none; }
+  .subj a:hover { text-decoration: underline; }
+  .card.unread .subj::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: middle; }
+  .gist { margin: 0; color: var(--muted); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag, .cat { font-size: 11.5px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+  .tag.ref { font-family: var(--mono); border-radius: 5px; }
+  .tag.to { color: var(--mid); border-color: color-mix(in srgb, var(--mid) 50%, transparent); }
+  .tag.done { color: var(--lo); border-color: color-mix(in srgb, var(--lo) 50%, transparent); }
+  details.act { font-size: 12.5px; }
+  details.act summary { cursor: pointer; color: var(--muted); list-style: none; }
+  details.act summary::-webkit-details-marker { display: none; }
+  details.act summary::after { content: " ▾"; font-size: 10px; }
+  details.act[open] summary::after { content: " ▴"; }
+  details.act p { margin: 6px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--bg); }
+  details.act p.why { padding: 0; background: none; color: var(--muted); }
+
+  .gate { max-width: 520px; margin: 10vh auto 0; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; display: grid; gap: 14px; text-align: center; }
+  .gate h1 { font-size: 24px; }
+  .gate p { margin: 0; color: var(--muted); }
+  .ms-btn { justify-self: center; appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 8px; padding: 10px 18px; font-weight: 600; cursor: pointer; display: inline-flex; gap: 10px; align-items: center; }
+  .ms-btn:hover { border-color: var(--accent); }
+  .ms-logo { display: grid; grid-template-columns: 8px 8px; gap: 2px; }
+  .ms-logo i { width: 8px; height: 8px; }
+  .file-in { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  table.files { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
+  table.files th, table.files td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.files th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<div class="gate" id="gate-setup" hidden>
+  <h1>설정이 필요해요</h1>
+  <p>이 파일 맨 아래쪽 <code>CLIENT_ID</code>에 Microsoft 앱 등록 ID를 넣어야 로그인할 수 있어요. 함께 드린 「설치 안내」를 따라 해 주세요.</p>
+</div>
+
+<div class="gate" id="gate-login" hidden>
+  <p class="eyebrow" style="color: var(--accent); opacity: 1">Customer Service · Inbox Triage</p>
+  <h1>메일 긴급도 확인</h1>
+  <p>회사 메일 계정으로 한 번만 로그인하면, 내 받은편지함을 긴급 · 보통 · 여유로 자동 분류해 보여드려요. 메일은 이 브라우저 안에서만 읽고 어디에도 저장하지 않아요.</p>
+  <button class="ms-btn" type="button" id="login"><span class="ms-logo" aria-hidden="true"><i style="background:#f25022"></i><i style="background:#7fba00"></i><i style="background:#00a4ef"></i><i style="background:#ffb900"></i></span>Microsoft 계정으로 로그인</button>
+  <p class="msg bad" id="login-err" hidden></p>
+</div>
+
+<div class="wrap" id="app" hidden>
+  <header class="band">
+    <div class="band-top">
+      <div>
+        <p class="eyebrow">Customer Service · Inbox Triage</p>
+        <h1>메일 긴급도 확인</h1>
+      </div>
+      <div class="bar">
+        <span class="live"><span class="dot"></span>실시간 · 마지막 확인 <b id="asof">—</b></span>
+        <button class="band-btn" type="button" id="refresh">지금 새로고침</button>
+        <button class="band-btn ghost" type="button" id="logout">로그아웃</button>
+      </div>
+    </div>
+    <p class="lede">아직 회신하지 않은 고객 문의가 <b id="n-inq">—</b>건, 그중 아직 안 읽은 메일이 <b class="unread" id="n-unread">—</b>건, 바로 처리해야 할 긴급 건이 <b class="hi" id="n-hi">—</b>건이에요.</p>
+    <span class="who-am-i" id="whoami"></span>
+  </header>
+
+  <section class="mix" id="mix">
+    <div class="cats" id="cats"></div>
+    <div class="zone" id="zone" role="button" tabindex="0" title=".msg · .eml · .txt 여러 개 가능. 파일은 이 브라우저 안에서만 읽어요.">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
+      <strong>메일 파일 끌어다 놓기</strong><span>또는 클릭해서 선택</span>
+    </div>
+    <input class="file-in" type="file" id="file-in" multiple accept=".msg,.eml,.txt" aria-label="메일 파일 선택">
+    <p class="note full" id="file-note" hidden></p>
+    <div class="full scroll" id="file-box" hidden>
+      <table class="files"><thead><tr><th>파일</th><th>제목 · 요약</th><th>분류</th><th>긴급도</th><th>추천 조치사항</th></tr></thead><tbody id="file-rows"></tbody></table>
+      <button class="chip" type="button" id="file-clear" style="margin-top:8px">파일 결과 지우기</button>
+    </div>
+  </section>
+
+  <section style="display:grid; gap:10px">
+    <div class="sec-head">
+      <h2>받은편지함 자동 분류</h2>
+      <div class="chips">
+        <button class="chip" type="button" id="t-done" aria-pressed="false">회신한 메일도 보기 (<span id="n-done">0</span>)</button>
+        <button class="chip" type="button" id="t-noise" aria-pressed="false">알림·단체 메일도 보기 (<span id="n-noise">0</span>)</button>
+      </div>
+    </div>
+    <p class="note">받은편지함 최근 75통과 보낸편지함 최근 100통을 열어 둔 동안 5분마다 다시 읽어요. 이미 회신한 메일, 단체·자동 메일, 팀 공용 주소로만 온 메일, 사내 직원이 업체에 보낸 메일은 숨겨요. 파란 점은 안 읽은 메일, ✓는 완료 표시예요. 제목을 누르면 아웃룩에서 열려요.</p>
+    <p class="msg bad" id="load-err" hidden></p>
+    <div class="board" id="board">
+      <div class="lane hi" data-lvl="상"><div class="lane-head"><span class="lane-dot"></span><span class="lane-name">긴급</span><span class="lane-sub">오늘 바로</span><span class="lane-n">0</span><button class="lane-btn" type="button" hidden>펼쳐보기 ▾</button></div><div class="lane-body"></div></div>
+      <div class="lane mid" data-lvl="중"><div class="lane-head"><span class="lane-dot"></span><span class="lane-name">보통</span><span class="lane-sub">확인 후 회신</span><span class="lane-n">0</span><button class="lane-btn" type="button" hidden>펼쳐보기 ▾</button></div><div class="lane-body"></div></div>
+      <div class="lane lo" data-lvl="하"><div class="lane-head"><span class="lane-dot"></span><span class="lane-name">여유</span><span class="lane-sub">틈날 때</span><span class="lane-n">0</span><button class="lane-btn" type="button" hidden>펼쳐보기 ▾</button></div><div class="lane-body"></div></div>
+      <div class="lane noise" data-lvl="-" hidden><div class="lane-head"><span class="lane-dot"></span><span class="lane-name">알림</span><span class="lane-sub">읽기만</span><span class="lane-n">0</span><button class="lane-btn" type="button" hidden>펼쳐보기 ▾</button></div><div class="lane-body"></div></div>
+    </div>
+  </section>
+</div>
+
+<script>
+/* ===== Settings ===== */
+// Paste the Application (client) ID from the Microsoft app registration here.
+const CLIENT_ID = '';
+// 'organizations' lets any work account (흥아라인, 장금상선, …) sign in.
+const AUTHORITY = 'https://login.microsoftonline.com/organizations';
+const SCOPES = ['User.Read', 'Mail.Read'];
+const INBOX_COUNT = 75;
+const SENT_COUNT = 100;
+const REFRESH_MIN = 5;
+const PEEK = 3;
+</script>
+
+<script>
+/* ===== Keyword triage (same rules as the Claude page) ===== */
+  // Keyword triage shared by the inbox and dropped files.
+  window.tqTriage = (() => {
+    const CATS = ['클레임', '선적지연', '선적확인', '서류', '운임', '부킹'];
+    // Korean, English (word-bounded so "rate" doesn't fire inside "separate"), plus basic Chinese and Japanese.
+    const CAT_RULES = {
+      '클레임': [/클레임|파손|분실|침수|오염|도난|보상|사고|누수|찌그러|\b(claims?|damaged?|broken|dented|torn|leak(ed|ing|age)?|wet damage|contaminat\w*|lost cargo|cargo (was |is )?lost|missing cargo|shortage|short[- ]?landed|stolen)\b|索赔|破损|货损|丢失|クレーム|破損|事故/gi, 3],
+      '선적지연': [/미선적|선적\s*누락|롤\s*오버|지연|결항|늦|연착|출항\s*(변경|연기)|\b(shut[- ]?out|short[- ]?shipped|left behind|missed (the )?(vessel|connection)|not (loaded|shipped)|roll(ed)?[- ]?over|delay(ed|s)?|postpone\w*|skip(ped)?|omit(ted)?|blank sailing|eta|etd|schedule|vessel)\b|延误|延迟|甩柜|改船|船期|遅延|遅れ|スケジュール/gi, 2],
+      // "Is this shipment going ahead?" questions and their answers (실진행 / 캔슬).
+      '선적확인': [/진행\s*여부|선적\s*(여부|확인|진행|예정\s*확인)|실\s*진행|진행\s*(확인|하시나요|예정)|캔슬\s*여부|\b(shipping confirm(ation)?|confirm (the )?shipment|cargo (is )?ready|ready to ship|still (going|proceed)|go ahead|proceed with (the )?(booking|shipment))\b|确认出运|是否出运|出荷確認/gi, 3],
+      // A customer asking to move to another vessel or schedule is a booking change, not a delay.
+      '부킹': [/부킹|선복|스페이스|반입|공\s*컨|픽업|얼로케이션|모선\s*(으로\s*)?변경|스케[줄쥴]\s*변경|변경\s*(가능|요청|부탁|어려|희망)|\b(change (the )?(vessel|booking|schedule)|switch (to )?(another )?vessel|amend (the )?booking|move (the )?(booking|cargo) to)\b|改船|换船|\b(booking|bkg|bk\s*no|space|allocation|pick\s*-?up|empty (container|release)|t\/s|transship\w*|cancel(lation|led)?)\b|订舱|舱位|中转|ブッキング|スペース/gi, 2],
+      '서류': [/비엘|정정|수정|서렌더|디오|면장|적하목록|사본|원본|서류|마감|\b(b\/?l|bl|bill of lading|correction|amend(ment|ed)?|revise[ds]?|si|shipping instruction|surrender(ed)?|telex release|seaway|swb|obl|d\/?o|delivery order|manifest|draft|copy|original|vgm|hs ?code|document(s|ation)?|cut[- ]?off|closing|consignee|shipper|notify|typo|wrong|incorrect|arrival notice|release)\b|提单|改单|电放|放货|单证|截单|船荷証券|訂正|書類/gi, 2],
+      '운임': [/운임|요율|견적|청구|계산서|입금|송금|환불|디머리지|디텐션|부대비|비용|금액|정산|\b(freight|rates?|tariff|quot(e|es|ation)|invoices?|debit note|credit note|payment|paid|remit(tance|ted)?|refund|overcharge[ds]?|charges?|cost|amount|dem|det|demurrage|detention|thc|surcharge|baf|caf|ofr)\b|运费|费用|发票|付款|运价|運賃|請求書|費用/gi, 2],
+    };
+    const URGENT = [
+      [/클레임|파손|분실|침수|오염|도난|누수|\b(claims?|damaged?|broken|dented|leak(ed|ing|age)?|wet damage|contaminat\w*|lost cargo|cargo (was |is )?lost|missing cargo|shortage|short[- ]?landed|stolen)\b|索赔|破损|货损|クレーム|破損/i, 3, '화물 사고·클레임', 'claim'],
+      [/미선적|선적\s*누락|선적이?\s*안\s*(됐|되|된)|못\s*실|\b(shut[- ]?out|short[- ]?shipped|left behind|missed (the )?vessel|not (been )?(loaded|shipped))\b|甩柜|漏装/i, 3, '화물 미선적', 'notloaded'],
+      [/(d\/?o|디오|delivery order)[^.\n]{0,20}(미발급|안\s*나|발급\s*안|지연|못|not\s+(yet\s+)?(been\s+)?(issued|released|received)|pending)|(미발급|발급\s*안|not\s+(yet\s+)?(issued|released))[^.\n]{0,15}(d\/?o|디오|delivery order)|cannot (pick ?up|release) (the )?(cargo|container)|无法提货|未放货/i, 3, 'D/O 미발급', 'do'],
+      [/반출\s*(불가|못|안)|통관\s*(불가|보류|지연)|보류|억류|\b(on hold|put on hold|detained|seized|customs (issue|problem|hold|inspection)|cannot clear|clearance (problem|issue|delay))\b|扣货|海关查验|通关/i, 3, '반출·통관 보류', 'hold'],
+      [/롤\s*오버|\b(roll(ed)?[- ]?over)\b|甩柜/i, 3, '롤오버', 'rollover'],
+      [/\b(reject(ed|ion)?|declined)\b|cannot be (loaded|accepted|shipped)|not (be )?(accepted|approved)|반려|거절|적재\s*불가|선적\s*불가/i, 3, '거절·적재 불가', null],
+      [/\b(additional (document|doc|paper|info)\w*|missing (document|doc)\w*|please (submit|provide|resubmit))\b|추가\s*(서류|자료|제출)|서류\s*보완/i, 1, '추가 서류 요청', null],
+      [/긴급|급히|급합니다|\b(urgent(ly)?|asap|as soon as possible|immediately|critical|top priority|expedite|rush)\b|紧急|加急|尽快|至急|緊急/i, 2, '긴급 요청', null],
+      [/오늘|금일|당일|마감\s*(임박|직전)|출항\s*임박|내일\s*(오전|출항)|\b(today|tonight|by eod|end of (the )?day|deadline|cut[- ]?off|tomorrow morning)\b|今天|今日|本日/i, 1, '오늘·내일 마감 임박', null],
+      [/지연|변경|정정|수정|재발행|오류|틀|다릅|누락|\b(delay(ed)?|change[ds]?|correct(ion)?|amend(ment)?|revise[ds]?|re-?issue|wrong|incorrect|mismatch|discrepanc(y|ies)|error|missing)\b|改单|错误|訂正|変更/i, 1, '변경·정정 요청', null],
+    ];
+    const ACTIONS = [
+      ['claim', null, '클레임 접수 확인 회신 → 사진·Survey Report·CLP 요청 → 클레임/보험 담당 부서와 영업 담당에게 즉시 공유'],
+      ['notloaded', null, 'CLL·터미널 반입 여부 확인 → 미선적 사유 파악 후 다음 모선 대체 스케줄 안내 → 영업 담당 공유'],
+      ['do', null, '운임·부대비 입금, OBL 회수·서렌더 여부 확인 → 이상 없으면 즉시 D/O 발급, 아니면 미발급 사유와 필요 조치 회신'],
+      ['hold', null, 'Hold 사유(미수·서류 불일치·세관) 확인 → 해제 조건 안내, 서류 정정 필요 시 현지 대리점과 동시 진행'],
+      ['rollover', null, '롤오버 사유와 변경 모선 확인 → 고객에게 변경 스케줄 공문 발송, 반입·마감 일정 재안내'],
+      [null, /진행\s*여부|선적\s*(여부|확인|진행)|실\s*진행|캔슬\s*여부|\b(shipping confirm(ation)?|confirm (the )?shipment|still (going|proceed)|go ahead)\b|确认出运|是否出运|出荷確認/i, '부킹 진행 여부(실진행·캔슬) 확인 → 회신 받은 내용 SVMS에 반영, 미회신이면 서류 마감 전 재요청'],
+      [null, /서렌더|\b(surrender(ed)?|telex release)\b|电放/i, '운임 입금 확인 → Surrender 처리 후 현지 대리점 통보, 고객에게 처리 완료 회신'],
+      [null, /계산서|재발행|\b(invoices?|debit note|credit note|overcharge[ds]?|re-?issue)\b|发票|請求書/i, '청구 내역과 부킹 운임 대조 → 차이 원인 확인 후 계산서 수정·재발행'],
+      [null, /정정|수정|\b(correction|amend(ment)?|revise[ds]?|typo|wrong|incorrect)\b|改单|訂正/i, 'SI·수정본과 B/L 대조 후 정정 반영 → 마감 이후면 C/A(정정) 수수료 안내, 수정 Draft 송부'],
+      [null, /면장|\bexport (license|declaration)\b/i, '면장 선명·중량·수량과 B/L 일치 여부 확인 → 불일치 시 면장 정정 요청 안내'],
+      [null, /b\/?l\s*(제출|마감)|si\s*제출|\b(closing|cut[- ]?off|shipping instruction)\b|截单/i, 'SI 접수 여부 확인 → 미접수면 마감 시간과 함께 제출 요청, 접수됐으면 B/L 체크 진행'],
+      [null, /사본|\b(draft|copy)\b/i, 'B/L Draft(사본) 출력 후 메일 송부'],
+      [null, /디머리지|디텐션|프리\s*타임|\b(dem|det|demurrage|detention|free ?time)\b/i, '프리타임과 DEM/DET 요율 확인 → 예상 발생 금액과 반납 기한 안내'],
+      [null, /견적|요율|\b(quot(e|es|ation)|rates?|tariff)\b|运价|運賃/i, '타리프 확인 → 영업 담당에게 견적 요청 전달, 고객에게 회신 예정일 안내'],
+      [null, /입금|송금|환불|\b(payment|paid|remit(tance|ted)?|refund)\b|付款/i, '입금·환불 내역 확인 → 정산 담당 공유 후 처리 결과 회신'],
+      [null, /위험물|\b(dg|imo|imdg|un ?no|msds|dangerous goods|hazardous)\b|危险品|危険物/i, 'DG 신청서·MSDS 확인 → 선사 승인 여부 확인 후 화주에게 결과 안내'],
+      [null, /모선\s*(으로\s*)?변경|스케[줄쥴]\s*변경|변경\s*(가능|요청|부탁|어려|희망)|\b(change (the )?(vessel|booking|schedule)|switch (to )?(another )?vessel|amend (the )?booking)\b|改船|换船/i, '희망 모선의 스케줄·선복·서류 마감 확인 → 가능하면 부킹 변경 후 회신, 어려우면 사유와 대안 모선 안내'],
+      [null, /부킹|선복|스페이스|얼로케이션|\b(booking|bkg|space|allocation|t\/s|transship\w*)\b|订舱|舱位|中转/i, '부킹 내용(선복·스케줄·T/S 연결) 확인 → 가능하면 부킹 승인·번호 회신, 어려우면 대체 스케줄 안내'],
+      [null, /지연|스케[줄쥴]|결항|모선|\b(delay(ed)?|eta|etd|schedule|skip(ped)?|vessel|blank sailing)\b|延误|船期|遅延/i, '최신 스케줄(ETD·ETA) 확인 → 지연 사유와 변경 일정 안내'],
+    ];
+    const FALLBACK = {
+      '클레임': '클레임 접수 확인 회신 → 관련 서류 요청 후 담당 부서 공유',
+      '선적지연': '최신 스케줄 확인 후 변경 일정 안내',
+      '서류': '해당 서류 상태 확인 후 처리 결과 회신',
+      '운임': '운임·청구 내역 확인 후 회신',
+      '부킹': '부킹 상태(선복·스케줄) 확인 후 회신',
+      '선적확인': '부킹 진행 여부(실진행·캔슬) 확인 → 회신 받은 내용 SVMS에 반영, 미회신이면 서류 마감 전 재요청',
+    };
+    const SKIP_LINE = /^(수신|발신|참조|cc|to\s*:|from\s*:|fm\s*:|sent|subject|제목|안녕|감사|수고|좋은\s*하루|thanks|thank you|best|regards|br,|dear|hello|hi\b|good (day|morning|afternoon)|greetings|hope (this|you)|kind(ly)? regards|noted with thanks|please find|您好|谢谢|お世話|よろしく|드림|올림|업무에|노고|귀사|항상|평안|번창|당사의?\s*서비스|이용해\s*주셔서|[^ ]*\s*날씨|건강\s*유의|식사|office hours|tel|fax|mobile|e-?mail|-{2,}|\*{2,}|_{2,})/i;
+    const REF = /\b[A-Z]{4}[A-Z0-9]{7,14}\b/g;
+
+    function gist(text) {
+      // Drop short greeting/signature lines only, so a one-line mail opening with "Please find" keeps its text.
+      const lines = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !(SKIP_LINE.test(s) && s.length < 40));
+      const body = (lines.join(' ') || String(text || '')).replace(/\s+/g, ' ').trim();
+      const first = body.split(/(?<=[다요까죠][.!?]?)\s+|(?<=[a-z]{2}[.!?])\s+/)[0] || body;
+      return first.length > 90 ? first.slice(0, 88).trim() + '…' : first;
+    }
+    function toWhom(text) {
+      const m = String(text || '').match(/수신\s*[:：]\s*([^\r\n]{1,40})/);
+      if (!m) return '';
+      return m[1].split('/').map((s) => s.trim()).filter(Boolean).pop() || '';
+    }
+    function refs(text) {
+      return [...new Set(String(text || '').match(REF) || [])].filter((r) => /\d{5,}/.test(r));
+    }
+    function classify(text) {
+      const t = String(text || '');
+      const score = {};
+      CATS.forEach((c) => { const [re, w] = CAT_RULES[c]; score[c] = (t.match(re) || []).length * w; });
+      let best = CATS[0];
+      CATS.forEach((c) => { if (score[c] > score[best]) best = c; });
+      if (score[best] === 0) best = '서류';
+      if (score['클레임'] > 0) best = '클레임';
+      let points = 0;
+      const reasons = [];
+      let key = null;
+      URGENT.forEach(([re, p, label, k]) => { if (re.test(t)) { points += p; reasons.push(label); if (k && !key) key = k; } });
+      if (key === 'do') best = '서류';
+      // DG application traffic is paperwork, whatever vessel words it carries.
+      if (/dg\s*application|dangerous\s*goods|\bimdg\b|위험물\s*(신청|승인)|\bdg\b[^.\n]{0,20}(승인|approval|approved)/i.test(t)) best = '서류';
+      // A request to move vessels is a booking change unless the mail also reports an actual delay or shut-out.
+      if (/모선\s*(으로\s*)?변경|변경\s*(가능|요청|부탁|어려|희망)|\b(change (the )?(vessel|booking)|switch (to )?(another )?vessel|amend (the )?booking)\b|改船|换船/i.test(t)
+        && !/지연|미선적|롤\s*오버|\b(delay(ed)?|shut[- ]?out|short[- ]?shipped|roll(ed)?[- ]?over)\b|延误|遅延/i.test(t)) best = '부킹';
+      if (best === '클레임') points = Math.max(points, 3);
+      const level = points >= 3 ? '상' : points >= 1 ? '중' : '하';
+      let action = null;
+      for (const [k, re, a] of ACTIONS) { if (k ? k === key : re.test(t)) { action = a; break; } }
+      return { category: best, level, reasons: reasons.join(', '), action: action || FALLBACK[best] };
+    }
+    // Store document ids can't hold every character of an Outlook id, so a mail is saved under a short hash.
+    function key(id) {
+      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+      for (let i = 0; i < id.length; i++) { const c = id.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+      return 'm' + (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+    }
+    return { classify, gist, toWhom, refs, key };
+  })();
+</script>
+
+<script>
+/* ===== Mail file parsing (.msg / .eml / .txt), in the browser only ===== */
+  const tqFiles = (() => {
+    const latin1 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192)); return s; };
+    const toBytes = (str) => Uint8Array.from(str, (c) => c.charCodeAt(0) & 255);
+    const decode = (bytes, cs) => {
+      const tries = [cs, 'utf-8', 'euc-kr'].filter(Boolean);
+      for (const c of tries) { try { return new TextDecoder(c.trim().toLowerCase().replace(/^ks_c_5601-1987$/, 'euc-kr'), { fatal: c !== tries[tries.length - 1] }).decode(bytes); } catch (e) { /* next */ } }
+      return latin1(bytes);
+    };
+    const words = (s) => String(s || '').replace(/=\?([^?]+)\?([bBqQ])\?([^?]*)\?=\s*/g, (_, cs, enc, txt) => {
+      const bytes = enc.toUpperCase() === 'B' ? toBytes(atob(txt.replace(/\s/g, ''))) : toBytes(txt.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16))));
+      return decode(bytes, cs);
+    });
+    const qp = (s) => toBytes(s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16))));
+    const strip = (html) => { const d = new DOMParser().parseFromString(html, 'text/html'); return d.body ? d.body.innerText || d.body.textContent || '' : html; };
+
+    function part(raw) {
+      const cut = raw.search(/\r?\n\r?\n/);
+      const head = (cut < 0 ? raw : raw.slice(0, cut)).replace(/\r?\n[ \t]+/g, ' ');
+      const body = cut < 0 ? '' : raw.slice(cut).replace(/^\r?\n\r?\n/, '');
+      const h = {};
+      head.split(/\r?\n/).forEach((l) => { const i = l.indexOf(':'); if (i > 0) h[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim(); });
+      return { h, body };
+    }
+    function text(raw) {
+      const { h, body } = part(raw);
+      const ct = h['content-type'] || 'text/plain';
+      const b = ct.match(/boundary="?([^";]+)"?/i);
+      if (/multipart\//i.test(ct) && b) {
+        const parts = body.split('--' + b[1]).slice(1).filter((p) => !p.startsWith('--'));
+        const texts = parts.map((p) => ({ ct: (part(p.replace(/^\r?\n/, '')).h['content-type'] || ''), t: text(p.replace(/^\r?\n/, '')) }));
+        const plain = texts.find((x) => /text\/plain|multipart/i.test(x.ct) && x.t.trim());
+        return (plain || texts.find((x) => x.t.trim()) || { t: '' }).t;
+      }
+      if (!/^text\//i.test(ct)) return '';
+      const cs = (ct.match(/charset="?([^";]+)"?/i) || [])[1];
+      const te = (h['content-transfer-encoding'] || '').toLowerCase();
+      const bytes = te === 'base64' ? toBytes(atob(body.replace(/\s/g, ''))) : te === 'quoted-printable' ? qp(body) : toBytes(body);
+      const out = decode(bytes, cs);
+      return /text\/html/i.test(ct) ? strip(out) : out;
+    }
+    function eml(buf) {
+      const raw = latin1(new Uint8Array(buf));
+      const { h } = part(raw);
+      return { subject: words(h.subject), from: words(h.from), date: h.date ? new Date(h.date).toISOString() : '', body: text(raw) };
+    }
+
+    // Outlook .msg is a compound file; read the root-level property streams we need.
+    function msg(buf) {
+      const dv = new DataView(buf);
+      if (dv.getUint32(0, true) !== 0xE011CFD0) throw new Error('not a .msg file');
+      const ss = 1 << dv.getUint16(30, true);
+      const mss = 1 << dv.getUint16(32, true);
+      const nFat = dv.getUint32(44, true);
+      const dirStart = dv.getUint32(48, true);
+      const cutoff = dv.getUint32(56, true);
+      const miniFatStart = dv.getUint32(60, true);
+      let difatNext = dv.getUint32(68, true);
+      const off = (s) => (s + 1) * ss;
+      const difat = [];
+      for (let i = 0; i < 109; i++) difat.push(dv.getUint32(76 + i * 4, true));
+      for (let guard = 0; difatNext < 0xFFFFFFFA && guard < 1000; guard++) {
+        const o = off(difatNext);
+        for (let i = 0; i < ss / 4 - 1; i++) difat.push(dv.getUint32(o + i * 4, true));
+        difatNext = dv.getUint32(o + ss - 4, true);
+      }
+      const fat = [];
+      difat.slice(0, nFat).forEach((s) => { if (s < 0xFFFFFFFA) { const o = off(s); for (let i = 0; i < ss / 4; i++) fat.push(dv.getUint32(o + i * 4, true)); } });
+      const chain = (start, table) => { const out = []; let s = start; while (s < 0xFFFFFFFA && out.length < 1e6) { out.push(s); s = table[s]; } return out; };
+      const big = (start) => { const secs = chain(start, fat); const b = new Uint8Array(secs.length * ss); secs.forEach((s, i) => b.set(new Uint8Array(buf, off(s), Math.min(ss, buf.byteLength - off(s))), i * ss)); return b; };
+      const dir = big(dirStart);
+      const ddv = new DataView(dir.buffer);
+      const entries = [];
+      for (let o = 0; o + 128 <= dir.length; o += 128) {
+        const nl = ddv.getUint16(o + 64, true);
+        entries.push({
+          name: new TextDecoder('utf-16le').decode(dir.subarray(o, o + Math.max(0, nl - 2))),
+          type: dir[o + 66], left: ddv.getUint32(o + 68, true), right: ddv.getUint32(o + 72, true), child: ddv.getUint32(o + 76, true),
+          start: ddv.getUint32(o + 116, true), size: ddv.getUint32(o + 120, true),
+        });
+      }
+      const root = entries[0];
+      const miniStream = big(root.start);
+      const mfBytes = miniFatStart < 0xFFFFFFFA ? big(miniFatStart) : new Uint8Array(0);
+      const mdv = new DataView(mfBytes.buffer);
+      const miniFat = []; for (let i = 0; i + 4 <= mfBytes.length; i += 4) miniFat.push(mdv.getUint32(i, true));
+      const read = (e) => {
+        if (e.size < cutoff) {
+          const secs = chain(e.start, miniFat); const b = new Uint8Array(secs.length * mss);
+          secs.forEach((s, i) => b.set(miniStream.subarray(s * mss, s * mss + mss), i * mss));
+          return b.subarray(0, e.size);
+        }
+        return big(e.start).subarray(0, e.size);
+      };
+      const top = {};
+      const walk = (i, depth) => { if (i >= entries.length || depth > 500) return; const e = entries[i]; top[e.name] = e; walk(e.left, depth + 1); walk(e.right, depth + 1); };
+      walk(root.child, 0);
+      const prop = (id) => {
+        const u = top['__substg1.0_' + id + '001F'];
+        if (u && u.type === 2) return new TextDecoder('utf-16le').decode(read(u)).replace(/\0+$/, '');
+        const a = top['__substg1.0_' + id + '001E'];
+        if (a && a.type === 2) return decode(read(a), 'euc-kr').replace(/\0+$/, '');
+        return '';
+      };
+      let body = prop('1000');
+      if (!body) {
+        const html = top['__substg1.0_10130102'];
+        if (html && html.type === 2) body = strip(decode(read(html), 'utf-8'));
+      }
+      return { subject: prop('0037'), from: [prop('0C1A'), prop('0C1F') || prop('5D01')].filter(Boolean).join(' '), date: '', body };
+    }
+
+    async function parse(file) {
+      const buf = await file.arrayBuffer();
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.msg')) return msg(buf);
+      if (name.endsWith('.eml')) return eml(buf);
+      return { subject: file.name, from: '', date: '', body: decode(new Uint8Array(buf), 'utf-8') };
+    }
+    return { parse };
+  })();
+window.tqFiles = tqFiles;
+</script>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const T = window.tqTriage;
+
+  /* ----- Sign-in ----- */
+  if (!CLIENT_ID) { $('gate-setup').hidden = false; return; }
+  const app = new msal.PublicClientApplication({
+    auth: { clientId: CLIENT_ID, authority: AUTHORITY, redirectUri: location.origin + location.pathname },
+    cache: { cacheLocation: 'localStorage' },
+  });
+  let account = null;
+
+  async function token() {
+    try {
+      return (await app.acquireTokenSilent({ scopes: SCOPES, account })).accessToken;
+    } catch (e) {
+      await app.acquireTokenRedirect({ scopes: SCOPES, account });
+      throw e;
+    }
+  }
+  async function graph(path) {
+    const res = await fetch('https://graph.microsoft.com/v1.0' + path, { headers: { Authorization: 'Bearer ' + await token() } });
+    if (!res.ok) throw new Error(`메일을 읽지 못했어요 (${res.status}). 잠시 뒤 새로고침해 주세요.`);
+    return res.json();
+  }
+
+  /* ----- Load mail ----- */
+  const SEL = 'id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,bodyPreview,isRead,importance,webLink,conversationId';
+  async function load() {
+    const [me, inbox, sent] = await Promise.all([
+      graph('/me?$select=displayName,mail,userPrincipalName'),
+      graph(`/me/mailFolders/inbox/messages?$top=${INBOX_COUNT}&$orderby=receivedDateTime desc&$select=${SEL}`),
+      graph(`/me/mailFolders/sentitems/messages?$top=${SENT_COUNT}&$orderby=sentDateTime desc&$select=subject,sentDateTime,conversationId`),
+    ]);
+    const myMail = String(me.mail || me.userPrincipalName || '').toLowerCase();
+    $('whoami').textContent = `${me.displayName || ''} · ${myMail}`;
+    const mail = inbox.value.map((m) => {
+      const rec = [...(m.toRecipients || []), ...(m.ccRecipients || [])].map((r) => String(r.emailAddress && r.emailAddress.address || '').toLowerCase()).filter(Boolean);
+      return {
+        id: m.id, received: m.receivedDateTime || '', sender: String(m.from && m.from.emailAddress && m.from.emailAddress.address || '').toLowerCase(),
+        sender_name: (m.from && m.from.emailAddress && m.from.emailAddress.name) || '', subject: m.subject || '(제목 없음)', preview: (m.bodyPreview || '').slice(0, 600),
+        recipients: rec.length, to_list: rec.length <= 40 ? rec.join(',') : '', is_read: m.isRead ? 'Y' : 'N', important: m.importance === 'high' ? 'Y' : 'N',
+        link: m.webLink || '', conv: m.conversationId || '',
+      };
+    });
+    const sentRows = sent.value.map((s) => ({ subject: s.subject || '', sent: s.sentDateTime || '', conv: s.conversationId || '' }));
+    return { myMail, mail, sent: sentRows };
+  }
+
+  /* ----- Done marks (this browser only) ----- */
+  const DONE_KEY = 'mail-triage-done';
+  const readDone = () => { try { return new Set(JSON.parse(localStorage.getItem(DONE_KEY) || '[]')); } catch (e) { return new Set(); } };
+  const writeDone = (set) => { try { localStorage.setItem(DONE_KEY, JSON.stringify([...set].slice(-2000))); } catch (e) { /* storage blocked */ } };
+
+  /* ----- Triage of every mail ----- */
+  function triageAll({ myMail, mail, sent }, marked) {
+    const CONFIRM = /실\s*진행\s*(입니다|합니다|예정|하겠습니다)|진행\s*(합니다|하겠습니다|예정입니다|확정)|\b(will proceed|we confirm (the )?(shipment|booking)|confirmed to (ship|proceed)|please proceed|go ahead)\b|确认出运|出荷します/i;
+    const NEEDS = /캔슬|취소|감소|변경|줄|추가|연장|\b(cancel\w*|reduce\w*|change\w*|extend\w*|less|more)\b/i;
+    const AUTO = /noreply|no-reply|donotreply|sendonly|logisbill|mailer-daemon|notification|postmaster/i;
+    const BULK = /coastal schedule|skip notice|delay notice|all partners|newsletter|공지/i;
+    const INTERNAL = /@(heungaline\.com|sinokor\.co\.kr|sinokor\.com|heung-a\.com)/i;
+    const TEAM_BOXES = [
+      'csp@heungaline.com', 'csp1@heungaline.com', 'csp2@heungaline.com', 'csp3@heungaline.com', 'csp4@heungaline.com',
+      'cst@sinokor.co.kr', 'cstj@sinokor.co.kr', 'customer-service@sinokor.co.kr',
+    ];
+    const norm = (s) => {
+      let t = String(s || '').toLowerCase().trim();
+      for (let i = 0; i < 6; i++) t = t.replace(/^\s*(re|fw|fwd|회신|전달|답장|답변)\s*(\[\d+\])?\s*[:：]\s*/i, '');
+      return t.replace(/\s+/g, ' ').trim();
+    };
+    // A reply I sent later in the same conversation (or with the same subject) means it's handled.
+    const lastByConv = new Map(), lastBySubj = new Map();
+    const bump = (map, k, v) => { if (k && (!map.has(k) || v > map.get(k))) map.set(k, v); };
+    sent.forEach((s) => { bump(lastByConv, s.conv, s.sent); bump(lastBySubj, norm(s.subject), s.sent); });
+    const teamByConv = new Map(), teamBySubj = new Map();
+    mail.forEach((m) => {
+      if (INTERNAL.test(m.sender) && m.sender !== myMail && !AUTO.test(m.sender) && m.recipients <= 15) { bump(teamByConv, m.conv, m.received); bump(teamBySubj, norm(m.subject), m.received); }
+    });
+    const after = (map, k, t) => k && map.has(k) && map.get(k) > t;
+    return mail.map((m) => {
+      const text = m.subject + '\n' + m.preview;
+      const c = T.classify(text);
+      const toList = (m.to_list || '').split(',').filter(Boolean);
+      const internalReply = INTERNAL.test(m.sender) && /^\s*(re|fw|fwd|회신|전달)\s*[:：]/i.test(m.subject);
+      const teamBox = toList.some((a) => TEAM_BOXES.includes(a)) && !(myMail && toList.includes(myMail));
+      const outbound = INTERNAL.test(m.sender) && toList.some((a) => !INTERNAL.test(a));
+      const noise = (myMail && m.sender === myMail) || AUTO.test(m.sender) || m.recipients > 15 || internalReply || teamBox || outbound || BULK.test(m.subject + ' ' + m.preview.slice(0, 120));
+      const k = norm(m.subject);
+      const mine = !noise && (after(lastByConv, m.conv, m.received) || after(lastBySubj, k, m.received));
+      const team = !noise && !mine && !INTERNAL.test(m.sender) && (after(teamByConv, m.conv, m.received) || after(teamBySubj, k, m.received));
+      const mk = T.key(m.id);
+      const manual = !noise && marked.has(mk);
+      const own = m.preview.split(/From:|보낸\s*사람|-{3,}\s*Original|_{5,}|발신\s*:.*\n[\s\S]*수신\s*:/i)[0].slice(0, 240);
+      const dgMail = /dg\s*application|dangerous\s*goods|위험물\s*(신청|승인)/i.test(m.subject + ' ' + own);
+      const dgOk = /can be (loaded|accepted|shipped)|\b(approved|accepted|acceptable)\b|승인\s*(완료|되었|됐|합니다)|적재\s*가능/i.test(own);
+      const dgMore = /additional|missing|outstanding|please (submit|provide|send|advise|resubmit|revise)|resubmi\w*|reject\w*|declin\w*|not (be )?(accepted|approved|allowed|acceptable)|cannot be (loaded|accepted)|unable to|추가\s*(서류|자료|제출)|제출\s*(부탁|요청|바랍)|보완|반려|불가|거절/i.test(own);
+      const dgDone = !noise && dgMail && dgOk && !dgMore;
+      const noAnswer = !noise && !INTERNAL.test(m.sender) && ((CONFIRM.test(own) && !NEEDS.test(own)) || dgDone);
+      return {
+        replied: mine ? '내가 회신' : team ? '동료 회신' : manual ? '직접 완료' : dgDone ? 'DG 승인 완료' : noAnswer ? '회신 불필요' : '',
+        mkey: mk, manual, id: m.id, received: m.received, sender_name: m.sender_name, subject: m.subject,
+        gist: T.gist(m.preview), to_whom: T.toWhom(m.preview), refs: T.refs(text),
+        category: noise ? '알림' : c.category, level: noise ? '-' : c.level,
+        reasons: noise ? '' : c.reasons, action: noise ? '확인만 하면 되는 알림·단체 메일이에요' : c.action,
+        noise, is_read: m.is_read, important: m.important, link: m.link,
+      };
+    });
+  }
+
+  /* ----- Drawing ----- */
+  const ICON = {
+    '클레임': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>',
+    '선적지연': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20c2 1 4 1 6 0s4-1 6 0 4 1 6 0"/><path d="M4 18 3 13h18l-2 5"/><path d="M12 13V4"/><path d="M12 6h5l-1 3h-4"/></svg>',
+    '선적확인': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="m9 13 2 2 4-4"/></svg>',
+    '서류': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>',
+    '운임': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .9-3 2s1.3 1.7 3 2 3 .9 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5"/></svg>',
+    '부킹': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="1.5"/><path d="M3 11h18"/><path d="M8 7V4h8v3"/></svg>',
+    '알림': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg>',
+  };
+  const PALETTE = ['#1d4e89', '#2a78d6', '#1b9aaa', '#7a4fb8', '#3a9a63', '#c4532f', '#8e2c48', '#6b7a1f'];
+  const colorFor = (s) => { let h = 0; for (const ch of String(s || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; };
+  const initials = (name) => {
+    const n = String(name || '?').trim(); const ko = n.match(/[가-힣]/g);
+    if (ko && ko.length >= 2) return ko.slice(-2).join('');
+    const p = n.split(/[\s@._-]+/).filter(Boolean); return ((p[0] || '?')[0] + ((p[1] || '')[0] || '')).toUpperCase();
+  };
+  const ago = (iso) => {
+    if (!iso) return ''; const min = Math.round((Date.now() - new Date(iso)) / 60000);
+    if (min < 1) return '방금'; if (min < 60) return `${min}분 전`; if (min < 1440) return `${Math.floor(min / 60)}시간 전`;
+    const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+  const state = { rows: [], showDone: false, showNoise: false, open: {} };
+
+  function card(r) {
+    const c = el('article', 'card' + (r.is_read === 'N' ? ' unread' : '') + (r.replied ? ' done' : ''));
+    const top = c.appendChild(el('div', 'card-top'));
+    const a = top.appendChild(el('span', 'ava', initials(r.sender_name)));
+    const col = colorFor(r.sender_name); a.style.color = col; a.style.background = col + '22'; a.setAttribute('aria-hidden', 'true');
+    top.appendChild(el('span', 'card-name', r.sender_name));
+    const t = top.appendChild(el('span', 'card-time', ago(r.received))); if (r.received) t.title = new Date(r.received).toLocaleString();
+    if (!r.noise) {
+      const chk = top.appendChild(el('button', 'check', '✓'));
+      chk.type = 'button'; chk.setAttribute('aria-pressed', String(r.manual));
+      chk.title = r.manual ? '완료 취소하고 보드로 되돌리기' : '완료로 표시하고 보드에서 빼기';
+      chk.onclick = () => { const s = readDone(); r.manual ? s.delete(r.mkey) : s.add(r.mkey); writeDone(s); c.classList.add('leaving'); setTimeout(retriage, 200); };
+    }
+    const h = c.appendChild(el('h3', 'subj'));
+    if (/^https:\/\//.test(r.link)) { const l = h.appendChild(el('a', '', r.subject)); l.href = r.link; l.target = '_blank'; l.rel = 'noopener'; } else h.textContent = r.subject;
+    if (r.gist && r.gist !== r.subject) c.appendChild(el('p', 'gist', r.gist));
+    const tags = c.appendChild(el('div', 'tags'));
+    const cat = tags.appendChild(el('span', 'cat')); cat.innerHTML = ICON[r.category] || ''; cat.append(r.category);
+    if (r.replied) tags.appendChild(el('span', 'tag done', '회신 완료 · ' + r.replied));
+    if (r.to_whom) tags.appendChild(el('span', 'tag to', '수신: ' + r.to_whom));
+    if (r.important === 'Y') tags.appendChild(el('span', 'tag to', '중요'));
+    r.refs.slice(0, 3).forEach((x) => tags.appendChild(el('span', 'tag ref', x)));
+    if (!r.noise) {
+      const d = c.appendChild(el('details', 'act')); d.appendChild(el('summary', '', '추천 조치'));
+      d.appendChild(el('p', '', r.action)); if (r.reasons) d.appendChild(el('p', 'why', '근거: ' + r.reasons));
+    }
+    return c;
+  }
+
+  function render() {
+    const all = state.rows;
+    const q = all.filter((r) => !r.noise && !r.replied);
+    $('n-inq').textContent = q.length;
+    $('n-unread').textContent = q.filter((r) => r.is_read === 'N').length;
+    $('n-hi').textContent = q.filter((r) => r.level === '상').length;
+    $('n-done').textContent = all.filter((r) => r.replied).length;
+    $('n-noise').textContent = all.filter((r) => r.noise).length;
+    $('cats').replaceChildren(...['클레임', '선적지연', '선적확인', '서류', '운임', '부킹'].map((name) => {
+      const p = el('span', 'catpill'); p.innerHTML = ICON[name]; p.append(name + ' ');
+      p.appendChild(el('b', '', String(q.filter((r) => r.category === name).length))); return p;
+    }));
+    const rank = { '상': 0, '중': 1, '하': 2, '-': 3 };
+    const shown = all.filter((r) => (state.showNoise || !r.noise) && (state.showDone || !r.replied))
+      .sort((a, b) => rank[a.level] - rank[b.level] || (b.received || '').localeCompare(a.received || ''));
+    document.querySelectorAll('.lane').forEach((lane) => {
+      const lvl = lane.dataset.lvl;
+      if (lvl === '-') lane.hidden = !state.showNoise;
+      const rows = shown.filter((r) => r.level === lvl);
+      lane.querySelector('.lane-n').textContent = rows.length;
+      const open = !!state.open[lvl];
+      const btn = lane.querySelector('.lane-btn');
+      btn.hidden = rows.length <= PEEK; btn.textContent = open ? '접기 ▴' : '펼쳐보기 ▾';
+      btn.onclick = () => { state.open[lvl] = !open; render(); };
+      const body = lane.querySelector('.lane-body');
+      if (!rows.length) { body.replaceChildren(el('p', 'lane-empty', lvl === '상' ? '긴급한 메일이 없어요' : '비어 있어요')); return; }
+      const kids = (open ? rows : rows.slice(0, PEEK)).map(card);
+      if (rows.length > PEEK) { const m = el('button', 'more', open ? '접기 ▴' : `+${rows.length - PEEK}개 더 보기 ▾`); m.type = 'button'; m.onclick = btn.onclick; kids.push(m); }
+      body.replaceChildren(...kids);
+    });
+    $('t-done').setAttribute('aria-pressed', String(state.showDone));
+    $('t-noise').setAttribute('aria-pressed', String(state.showNoise));
+  }
+
+  let raw = null;
+  function retriage() { if (raw) { state.rows = triageAll(raw, readDone()); render(); } }
+  async function refresh() {
+    try {
+      raw = await load();
+      $('load-err').hidden = true;
+      retriage();
+      const d = new Date(); $('asof').textContent = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    } catch (e) {
+      $('load-err').textContent = e.message || '메일을 읽지 못했어요.'; $('load-err').hidden = false;
+    }
+  }
+
+  /* ----- Dropped mail files ----- */
+  function setupDrop() {
+    const zone = $('zone'), input = $('file-in'); let results = [];
+    const show = () => {
+      const rank = { '상': 0, '중': 1, '하': 2 };
+      $('file-rows').replaceChildren(...results.slice().sort((a, b) => rank[a.level] - rank[b.level]).map((r) => {
+        const tr = el('tr'); tr.appendChild(el('td', '', r.file));
+        const td = tr.appendChild(el('td')); td.appendChild(el('div', '', r.subject)); if (r.gist) td.appendChild(el('div', 'gist', r.gist));
+        tr.appendChild(el('td', '', r.category)); tr.appendChild(el('td', '', r.level)); tr.appendChild(el('td', '', r.action)); return tr;
+      }));
+      $('file-box').hidden = !results.length;
+    };
+    const note = (t, bad) => { $('file-note').textContent = t; $('file-note').hidden = !t; $('file-note').style.color = bad ? 'var(--hi)' : ''; };
+    async function take(files) {
+      const list = [...files]; if (!list.length) return; const failed = [];
+      for (const f of list) {
+        try {
+          const m = await window.tqFiles.parse(f); const text = (m.subject || '') + '\n' + (m.body || ''); const c = T.classify(text);
+          results.push({ file: f.name, subject: m.subject || f.name, gist: T.gist(m.body), category: c.category, level: c.level, action: c.action });
+        } catch (e) { failed.push(f.name); }
+      }
+      show(); note(failed.length ? `읽지 못한 파일: ${failed.join(', ')}` : `${list.length}개 파일을 분석했어요.`, failed.length > 0);
+    }
+    zone.onclick = () => input.click();
+    zone.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } };
+    input.onchange = () => { take(input.files); input.value = ''; };
+    ['dragenter', 'dragover'].forEach((t) => zone.addEventListener(t, (e) => { e.preventDefault(); zone.classList.add('over'); }));
+    ['dragleave', 'dragend'].forEach((t) => zone.addEventListener(t, () => zone.classList.remove('over')));
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault(); zone.classList.remove('over');
+      const f = e.dataTransfer && e.dataTransfer.files;
+      if (f && f.length) take(f); else note('파일을 받지 못했어요. 데스크톱 아웃룩에서 끌어다 놓거나 메일을 .eml로 저장해서 넣어 주세요.', true);
+    });
+    $('file-clear').onclick = () => { results = []; show(); note(''); };
+  }
+
+  /* ----- Start ----- */
+  (async () => {
+    try {
+      await app.initialize?.();
+      const r = await app.handleRedirectPromise();
+      account = (r && r.account) || app.getAllAccounts()[0] || null;
+    } catch (e) {
+      $('login-err').textContent = '로그인하지 못했어요: ' + (e.errorMessage || e.message || e); $('login-err').hidden = false;
+    }
+    if (!account) {
+      $('gate-login').hidden = false;
+      $('login').onclick = () => app.loginRedirect({ scopes: SCOPES, prompt: 'select_account' });
+      return;
+    }
+    $('app').hidden = false;
+    $('refresh').onclick = refresh;
+    $('logout').onclick = () => app.logoutRedirect({ account });
+    $('t-done').onclick = () => { state.showDone = !state.showDone; render(); };
+    $('t-noise').onclick = () => { state.showNoise = !state.showNoise; render(); };
+    setupDrop();
+    await refresh();
+    setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MIN * 60 * 1000);
+  })();
+})();
+</script>
+</body>
+</html>
